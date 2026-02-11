@@ -1,7 +1,7 @@
 from playwright.sync_api import sync_playwright
 import time
 import random
-from human_move import human_mouse_move
+from browser.scrolling import human_mouse_move
 
 def click_search_button(page, log=print):
     

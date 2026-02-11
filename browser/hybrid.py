@@ -1,13 +1,10 @@
 from playwright.sync_api import sync_playwright
 import time
 import random
-import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from search_engine import perform_search
+from browser.search_engine import perform_search
 from utils.csv_loader import load_targets_from_csv
-from scraper_integration import run_scraper_pipeline_sync
-from scrolling import (
+from browser.scraper_integration import run_scraper_pipeline_sync
+from browser.scrolling import (
     create_log_function,
     create_stop_checker,
     do_single_scroll,
@@ -74,6 +71,43 @@ def go_back_to_feed(page, log=print):
         log(f"Back navigation failed: {e}, using direct navigation...")
         page.goto("https://www.instagram.com")
         time.sleep(random.uniform(2.0, 3.0))
+
+
+def scroll_to_top_and_follow(page, username, log=print):
+    """Scroll to the top of a profile page and click the Follow button."""
+    try:
+        log(f"⬆️ Scrolling to top of @{username}'s profile...")
+        page.keyboard.press("Home")
+        time.sleep(random.uniform(1.0, 2.0))
+
+        # Look for the Follow button (not "Following" or "Requested")
+        follow_selectors = [
+            'button:has-text("Follow"):not(:has-text("Following")):not(:has-text("Requested"))',
+            'xpath=//button[.//div[text()="Follow"] and not(.//div[text()="Following"]) and not(.//div[text()="Requested"])]',
+            'xpath=//header//button[contains(text(),"Follow") and not(contains(text(),"Following")) and not(contains(text(),"Requested"))]',
+        ]
+
+        for selector in follow_selectors:
+            try:
+                btn = page.query_selector(selector)
+                if btn and btn.is_visible():
+                    btn_text = btn.inner_text().strip()
+                    # Double-check: only click if the text is exactly "Follow"
+                    if btn_text == "Follow":
+                        time.sleep(random.uniform(0.5, 1.2))
+                        btn.click()
+                        log(f"✅ Followed @{username}!")
+                        time.sleep(random.uniform(1.0, 2.0))
+                        return True
+            except:
+                continue
+
+        log(f"⚠️ Follow button not found for @{username} (may already be following)")
+        return False
+
+    except Exception as e:
+        log(f"❌ Error following @{username}: {e}")
+        return False
 
 
 def scroll_on_page(page, scroll_count, should_stop, log=print, like_chance=0.10):
@@ -477,6 +511,9 @@ def run_scraper_scroll_session(account_path, session_duration, should_stop, log,
                         log(f"📜 Scrolling {num_scrolls} times on @{username}'s profile...")
                         visit_likes = scroll_on_page(page, num_scrolls, should_stop, log, like_chance=0.10)
                         like_count += visit_likes
+
+                        # Scroll to top and follow
+                        scroll_to_top_and_follow(page, username, log)
 
                         log(f"✅ Visited @{username} - {num_scrolls} scrolls, {visit_likes} likes")
 

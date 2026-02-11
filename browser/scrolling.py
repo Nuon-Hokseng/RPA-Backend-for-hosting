@@ -10,7 +10,18 @@ def create_log_function(log_callback):
             print(msg)
     return log
 
-
+def human_mouse_move(page, element):
+    # Get element bounding box
+    box = element.bounding_box()
+    if box:
+        # Add slight randomness to target position (not exact center)
+        target_x = box['x'] + box['width'] / 2 + random.uniform(-5, 5)
+        target_y = box['y'] + box['height'] / 2 + random.uniform(-3, 3)
+        
+        # Move mouse with slight delay to simulate natural movement
+        page.mouse.move(target_x, target_y, steps=random.randint(5, 15))
+        time.sleep(random.uniform(0.1, 0.3))
+      
 def create_stop_checker(stop_flag):
 
     def should_stop():
