@@ -90,6 +90,7 @@ def make_stop_fn(task_id: str):
 # ── Request / Response Models ───────────────────────────────────────
 
 class SessionRequest(BaseModel):
+    user_id: int = Field(..., description="User id from the authentication table")
     account_path: str = Field(..., description="Path to the browser profile directory")
     timeout: int = Field(120, description="Seconds to wait for manual login")
 
