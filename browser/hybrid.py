@@ -4,6 +4,11 @@ import random
 from browser.search_engine import perform_search
 from utils.csv_loader import load_targets_from_csv
 from browser.scraper_integration import run_scraper_pipeline_sync
+from browser.launcher import (
+    BrowserType,
+    DEFAULT_BROWSER,
+    DEFAULT_HEADLESS,
+)
 from browser.scrolling import (
     create_log_function,
     create_stop_checker,
@@ -190,10 +195,10 @@ def perform_search_and_explore(page, search_targets, profile_scroll_count, shoul
         return False
 
 
-def run_scroll_session(account_path, session_duration, should_stop, log, headless, search_targets, search_chance, profile_scroll_count):
+def run_scroll_session(cookies: list[dict], session_duration, should_stop, log, headless, search_targets, search_chance, profile_scroll_count, browser_type: BrowserType = DEFAULT_BROWSER):
     """Run a single scroll session and return stats."""
     with sync_playwright() as p:
-        context, page = launch_instagram_browser(p, account_path, headless, log)
+        browser, context, page = launch_instagram_browser(p, cookies, headless, log, browser_type=browser_type)
         
         log(f"Starting combined scroll session ({session_duration}s)...")
         if search_targets:
@@ -233,20 +238,22 @@ def run_scroll_session(account_path, session_duration, should_stop, log, headles
         log(f"Session complete: {scroll_count} scrolls, {like_count} likes, {explore_count} explores")
         log("Closing browser...")
         context.close()
+        browser.close()
     
     return {'scrolls': scroll_count, 'likes': like_count, 'explores': explore_count}, not should_stop()
 
 
 def run_combined_scroll(
-    account_path, 
+    cookies: list[dict], 
     duration=60, 
     stop_flag=None, 
     log_callback=None, 
-    headless=False, 
+    headless=DEFAULT_HEADLESS, 
     infinite_mode=False,
     search_targets=None,
     search_chance=0.30,
-    profile_scroll_count=(3, 8)
+    profile_scroll_count=(3, 8),
+    browser_type: BrowserType = DEFAULT_BROWSER,
 ):
     log = create_log_function(log_callback)
     should_stop = create_stop_checker(stop_flag)
@@ -256,28 +263,31 @@ def run_combined_scroll(
     else:
         log("Running with visible browser")
     
+    log(f"Browser: {browser_type}")
+    
     if search_targets:
         log(f"Combined Mode: Will randomly explore {len(search_targets)} targets")
     
     if infinite_mode:
         def session_runner(session_duration):
-            return run_scroll_session(account_path, session_duration, should_stop, log, headless, search_targets, search_chance, profile_scroll_count)
+            return run_scroll_session(cookies, session_duration, should_stop, log, headless, search_targets, search_chance, profile_scroll_count, browser_type=browser_type)
         run_infinite_mode(session_runner, should_stop, log)
     else:
-        run_scroll_session(account_path, duration, should_stop, log, headless, search_targets, search_chance, profile_scroll_count)
+        run_scroll_session(cookies, duration, should_stop, log, headless, search_targets, search_chance, profile_scroll_count, browser_type=browser_type)
     
     log("✅ Done!")
 
 
 def run_csv_profile_visit(
-    account_path,
+    cookies: list[dict],
     csv_path,
     stop_flag=None,
     log_callback=None,
-    headless=False,
+    headless=DEFAULT_HEADLESS,
     scroll_count_range=(3, 8),
     delay_between_profiles=(5, 15),
-    like_chance=0.10
+    like_chance=0.10,
+    browser_type: BrowserType = DEFAULT_BROWSER,
 ):
     log = create_log_function(log_callback)
     should_stop = create_stop_checker(stop_flag)
@@ -314,7 +324,7 @@ def run_csv_profile_visit(
     failed_visits = []
     
     with sync_playwright() as p:
-        context, page = launch_instagram_browser(p, account_path, headless, log)
+        browser, context, page = launch_instagram_browser(p, cookies, headless, log, browser_type=browser_type)
         
         time.sleep(random.uniform(1.0, 2.0))
         
@@ -371,6 +381,7 @@ def run_csv_profile_visit(
         
         log("Closing browser...")
         context.close()
+        browser.close()
     
     # Final summary
     log(f"\n{'='*50}")
@@ -385,11 +396,12 @@ def run_csv_profile_visit(
     log("✅ Done!")
 
 
-def run_scraper_scroll_session(account_path, session_duration, should_stop, log, headless,
+def run_scraper_scroll_session(cookies: list[dict], session_duration, should_stop, log, headless,
                                target_customer, scraper_chance=0.20, model="llama3:8b",
                                search_targets=None, search_chance=0.30,
                                profile_scroll_count=(3, 8),
-                               max_scraped_accounts=30):
+                               max_scraped_accounts=30,
+                               browser_type: BrowserType = DEFAULT_BROWSER):
     """
     Run a scroll session with 20% chance to trigger the scraper pipeline.
     Scraper only fires while we have < max_scraped_accounts usernames collected.
@@ -397,7 +409,7 @@ def run_scraper_scroll_session(account_path, session_duration, should_stop, log,
     its time visiting those profiles one-by-one between normal scrolls.
     """
     with sync_playwright() as p:
-        context, page = launch_instagram_browser(p, account_path, headless, log)
+        browser, context, page = launch_instagram_browser(p, cookies, headless, log, browser_type=browser_type)
 
         log(f"Starting scraper-enabled scroll session ({session_duration}s)...")
         log(f"🔬 Scraper chance: {int(scraper_chance * 100)}% | Target: {target_customer}")
@@ -550,6 +562,7 @@ def run_scraper_scroll_session(account_path, session_duration, should_stop, log,
             f"{profiles_visited} profiles visited, {remaining} still queued")
         log("Closing browser...")
         context.close()
+        browser.close()
 
     return {
         'scrolls': scroll_count,
@@ -561,18 +574,19 @@ def run_scraper_scroll_session(account_path, session_duration, should_stop, log,
 
 
 def run_combined_scroll_with_scraper(
-    account_path,
+    cookies: list[dict],
     duration=60,
     stop_flag=None,
     log_callback=None,
-    headless=False,
+    headless=DEFAULT_HEADLESS,
     infinite_mode=False,
     target_customer="car",
     scraper_chance=0.20,
     model="llama3:8b",
     search_targets=None,
     search_chance=0.30,
-    profile_scroll_count=(3, 8)
+    profile_scroll_count=(3, 8),
+    browser_type: BrowserType = DEFAULT_BROWSER,
 ):
     """
     Combined scroll mode with scraper integration.
@@ -587,6 +601,7 @@ def run_combined_scroll_with_scraper(
     else:
         log("Running with visible browser")
 
+    log(f"Browser: {browser_type}")
     log(f"🔬 Scraper Mode: {int(scraper_chance * 100)}% chance during scrolling")
     log(f"🎯 Target customer: {target_customer}")
     if search_targets:
@@ -595,16 +610,18 @@ def run_combined_scroll_with_scraper(
     if infinite_mode:
         def session_runner(session_duration):
             return run_scraper_scroll_session(
-                account_path, session_duration, should_stop, log, headless,
+                cookies, session_duration, should_stop, log, headless,
                 target_customer, scraper_chance, model,
-                search_targets, search_chance, profile_scroll_count
+                search_targets, search_chance, profile_scroll_count,
+                browser_type=browser_type,
             )
         run_infinite_mode(session_runner, should_stop, log)
     else:
         run_scraper_scroll_session(
-            account_path, duration, should_stop, log, headless,
+            cookies, duration, should_stop, log, headless,
             target_customer, scraper_chance, model,
-            search_targets, search_chance, profile_scroll_count
+            search_targets, search_chance, profile_scroll_count,
+            browser_type=browser_type,
         )
 
     log("✅ Done!")

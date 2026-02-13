@@ -2,6 +2,12 @@ from playwright.sync_api import sync_playwright
 import time
 import random
 from browser.scrolling import human_mouse_move
+from browser.launcher import (
+    launch_with_cookies,
+    BrowserType,
+    DEFAULT_BROWSER,
+    DEFAULT_HEADLESS,
+)
 
 def click_search_button(page, log=print):
     
@@ -174,7 +180,7 @@ def perform_search(page, search_term, search_type="hashtag", log=print):
     # Click on result
     return click_search_result(page, search_type, log)
 
-def search_instagram(account_path, search_term, search_type="hashtag", stop_flag=None, log_callback=None, keep_open=True, headless=False):
+def search_instagram(cookies: list[dict], search_term, search_type="hashtag", stop_flag=None, log_callback=None, keep_open=True, headless=DEFAULT_HEADLESS, browser_type: BrowserType = DEFAULT_BROWSER):
     def log(msg):
         if log_callback:
             log_callback(msg)
@@ -192,14 +198,15 @@ def search_instagram(account_path, search_term, search_type="hashtag", stop_flag
     else:
         log("Running with visible browser")
     
-    log("Launching browser...")
+    log(f"Launching {browser_type} browser...")
     
     with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            account_path, 
+        browser, context, page = launch_with_cookies(
+            p,
+            cookies,
+            browser_type=browser_type,
             headless=headless,
         )
-        page = context.pages[0] if context.pages else context.new_page()
         
         log("Browser launched successfully")
         
@@ -235,5 +242,6 @@ def search_instagram(account_path, search_term, search_type="hashtag", stop_flag
                     break
         try:
             context.close()
+            browser.close()
         except:
             pass

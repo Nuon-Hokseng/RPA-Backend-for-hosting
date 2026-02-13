@@ -1,6 +1,12 @@
 from playwright.sync_api import sync_playwright
 import time
 import random
+from browser.launcher import (
+    launch_with_cookies,
+    BrowserType,
+    DEFAULT_BROWSER,
+    DEFAULT_HEADLESS,
+)
 
 def create_log_function(log_callback):
     def log(msg):
@@ -66,14 +72,15 @@ def try_random_like(page, like_chance_range=(0.10, 0.15), log=print):
     return False
 
 
-def launch_instagram_browser(playwright, account_path, headless=False, log=print):
-    log("🚀 Launching browser...")
+def launch_instagram_browser(playwright, cookies: list[dict], headless=DEFAULT_HEADLESS, log=print, browser_type: BrowserType = DEFAULT_BROWSER):
+    log(f"🚀 Launching {browser_type} browser (headless={headless})...")
     
-    context = playwright.chromium.launch_persistent_context(
-        account_path,
+    browser, context, page = launch_with_cookies(
+        playwright,
+        cookies,
+        browser_type=browser_type,
         headless=headless,
     )
-    page = context.pages[0] if context.pages else context.new_page()
     
     log("✅ Browser launched successfully")
     log("Navigating to Instagram...")
@@ -94,7 +101,7 @@ def launch_instagram_browser(playwright, account_path, headless=False, log=print
     except:
         pass
     
-    return context, page
+    return browser, context, page
 
 
 def run_timed_scroll_loop(page, duration, should_stop, log=print, on_scroll_callback=None):
@@ -190,7 +197,7 @@ def run_infinite_mode(run_session_func, should_stop, log=print,
     
     return total_stats
 
-def run_instagram_scroll(account_path, duration=60, stop_flag=None, log_callback=None, headless=False, infinite_mode=False, on_scroll_callback=None):
+def run_instagram_scroll(cookies: list[dict], duration=60, stop_flag=None, log_callback=None, headless=DEFAULT_HEADLESS, infinite_mode=False, on_scroll_callback=None, browser_type: BrowserType = DEFAULT_BROWSER):
     log = create_log_function(log_callback)
     should_stop = create_stop_checker(stop_flag)
     
@@ -202,7 +209,7 @@ def run_instagram_scroll(account_path, duration=60, stop_flag=None, log_callback
         nonlocal total_scrolls, total_likes
         
         with sync_playwright() as p:
-            context, page = launch_instagram_browser(p, account_path, headless, log)
+            browser, context, page = launch_instagram_browser(p, cookies, headless, log, browser_type=browser_type)
             
             log(f"Starting scroll session ({session_duration}s)...")
             scroll_count, like_count = run_timed_scroll_loop(
@@ -214,6 +221,7 @@ def run_instagram_scroll(account_path, duration=60, stop_flag=None, log_callback
             log(f"Session complete: {scroll_count} scrolls, {like_count} likes")
             log("Closing browser...")
             context.close()
+            browser.close()
         
         return {'scrolls': scroll_count, 'likes': like_count, 'explores': 0}, not should_stop()
     

@@ -6,36 +6,52 @@ Four automation modes, all run as background tasks:
   2. Combined scroll + search/explore
   3. Combined scroll + scraper pipeline + profile visits
   4. CSV-based profile visiting
+
+All modes require a ``user_id`` — cookies are fetched from Supabase
+so no local browser profile is needed.
 """
 
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from api.shared.models import (
     ScrollRequest, CombinedScrollRequest, ScraperScrollRequest,
     CSVProfileVisitRequest, TaskResponse,
     create_task, update_task, make_log_fn, make_stop_fn, TaskStatus,
 )
+from api.shared.db import fetch_latest_user_cookies
 
 router = APIRouter(prefix="/scrolling", tags=["Scrolling Automation"])
 
 
+def _get_cookies_or_fail(user_id: int, log) -> list[dict]:
+    """Fetch cookies from DB. Raises if none found."""
+    row = fetch_latest_user_cookies(user_id)
+    if not row or not row.get("cookies"):
+        raise RuntimeError(f"No Instagram cookies found for user_id={user_id}. Call POST /session/save first.")
+    cookies = row["cookies"]
+    log(f"Loaded {len(cookies)} cookies from database for user_id={user_id}")
+    return cookies
+
+
 # ── Workers ──────────────────────────────────────────────────────────
 
-def _basic_scroll_worker(task_id: str, account_path: str, duration: int,
-                         headless: bool, infinite_mode: bool):
+def _basic_scroll_worker(task_id: str, user_id: int, duration: int,
+                         headless: bool, infinite_mode: bool, browser_type: str):
     log = make_log_fn(task_id)
     stop = make_stop_fn(task_id)
     update_task(task_id, status=TaskStatus.RUNNING)
-    log(f"Basic scroll – duration={duration}s, headless={headless}, infinite={infinite_mode}")
+    log(f"Basic scroll – duration={duration}s, headless={headless}, infinite={infinite_mode}, browser={browser_type}")
 
     try:
+        cookies = _get_cookies_or_fail(user_id, log)
         from browser.scrolling import run_instagram_scroll
         run_instagram_scroll(
-            account_path=account_path,
+            cookies=cookies,
             duration=duration,
             stop_flag=stop,
             log_callback=log,
             headless=headless,
             infinite_mode=infinite_mode,
+            browser_type=browser_type,
         )
         update_task(task_id, status=TaskStatus.COMPLETED, message="Scroll session finished")
     except Exception as e:
@@ -43,19 +59,21 @@ def _basic_scroll_worker(task_id: str, account_path: str, duration: int,
         update_task(task_id, status=TaskStatus.FAILED, message=str(e))
 
 
-def _combined_scroll_worker(task_id: str, account_path: str, duration: int,
+def _combined_scroll_worker(task_id: str, user_id: int, duration: int,
                             headless: bool, infinite_mode: bool,
                             search_targets: list[str] | None, search_chance: float,
-                            profile_scroll_min: int, profile_scroll_max: int):
+                            profile_scroll_min: int, profile_scroll_max: int,
+                            browser_type: str):
     log = make_log_fn(task_id)
     stop = make_stop_fn(task_id)
     update_task(task_id, status=TaskStatus.RUNNING)
-    log(f"Combined scroll – targets={search_targets}, chance={search_chance}")
+    log(f"Combined scroll – targets={search_targets}, chance={search_chance}, browser={browser_type}")
 
     try:
+        cookies = _get_cookies_or_fail(user_id, log)
         from browser.hybrid import run_combined_scroll
         run_combined_scroll(
-            account_path=account_path,
+            cookies=cookies,
             duration=duration,
             stop_flag=stop,
             log_callback=log,
@@ -64,6 +82,7 @@ def _combined_scroll_worker(task_id: str, account_path: str, duration: int,
             search_targets=search_targets,
             search_chance=search_chance,
             profile_scroll_count=(profile_scroll_min, profile_scroll_max),
+            browser_type=browser_type,
         )
         update_task(task_id, status=TaskStatus.COMPLETED, message="Combined scroll finished")
     except Exception as e:
@@ -71,21 +90,23 @@ def _combined_scroll_worker(task_id: str, account_path: str, duration: int,
         update_task(task_id, status=TaskStatus.FAILED, message=str(e))
 
 
-def _scraper_scroll_worker(task_id: str, account_path: str, duration: int,
+def _scraper_scroll_worker(task_id: str, user_id: int, duration: int,
                            headless: bool, infinite_mode: bool,
                            target_customer: str, scraper_chance: float,
                            model: str, search_targets: list[str] | None,
                            search_chance: float,
-                           profile_scroll_min: int, profile_scroll_max: int):
+                           profile_scroll_min: int, profile_scroll_max: int,
+                           browser_type: str):
     log = make_log_fn(task_id)
     stop = make_stop_fn(task_id)
     update_task(task_id, status=TaskStatus.RUNNING)
-    log(f"Scraper-scroll – target={target_customer}, scraper_chance={scraper_chance}")
+    log(f"Scraper-scroll – target={target_customer}, scraper_chance={scraper_chance}, browser={browser_type}")
 
     try:
+        cookies = _get_cookies_or_fail(user_id, log)
         from browser.hybrid import run_combined_scroll_with_scraper
         run_combined_scroll_with_scraper(
-            account_path=account_path,
+            cookies=cookies,
             duration=duration,
             stop_flag=stop,
             log_callback=log,
@@ -97,6 +118,7 @@ def _scraper_scroll_worker(task_id: str, account_path: str, duration: int,
             search_targets=search_targets,
             search_chance=search_chance,
             profile_scroll_count=(profile_scroll_min, profile_scroll_max),
+            browser_type=browser_type,
         )
         update_task(task_id, status=TaskStatus.COMPLETED, message="Scraper-scroll session finished")
     except Exception as e:
@@ -104,18 +126,20 @@ def _scraper_scroll_worker(task_id: str, account_path: str, duration: int,
         update_task(task_id, status=TaskStatus.FAILED, message=str(e))
 
 
-def _csv_visit_worker(task_id: str, account_path: str, csv_path: str,
+def _csv_visit_worker(task_id: str, user_id: int, csv_path: str,
                       headless: bool, scroll_min: int, scroll_max: int,
-                      delay_min: int, delay_max: int, like_chance: float):
+                      delay_min: int, delay_max: int, like_chance: float,
+                      browser_type: str):
     log = make_log_fn(task_id)
     stop = make_stop_fn(task_id)
     update_task(task_id, status=TaskStatus.RUNNING)
-    log(f"CSV profile visit – csv={csv_path}")
+    log(f"CSV profile visit – csv={csv_path}, browser={browser_type}")
 
     try:
+        cookies = _get_cookies_or_fail(user_id, log)
         from browser.hybrid import run_csv_profile_visit
         run_csv_profile_visit(
-            account_path=account_path,
+            cookies=cookies,
             csv_path=csv_path,
             stop_flag=stop,
             log_callback=log,
@@ -123,6 +147,7 @@ def _csv_visit_worker(task_id: str, account_path: str, csv_path: str,
             scroll_count_range=(scroll_min, scroll_max),
             delay_between_profiles=(delay_min, delay_max),
             like_chance=like_chance,
+            browser_type=browser_type,
         )
         update_task(task_id, status=TaskStatus.COMPLETED, message="CSV visit session finished")
     except Exception as e:
@@ -143,8 +168,8 @@ async def start_basic_scroll(req: ScrollRequest, bg: BackgroundTasks):
     task = create_task("Basic scroll")
     bg.add_task(
         _basic_scroll_worker,
-        task.task_id, req.account_path, req.duration,
-        req.headless, req.infinite_mode,
+        task.task_id, req.user_id, req.duration,
+        req.headless, req.infinite_mode, req.browser_type,
     )
     return TaskResponse(
         task_id=task.task_id, status="accepted",
@@ -162,10 +187,11 @@ async def start_combined_scroll(req: CombinedScrollRequest, bg: BackgroundTasks)
     task = create_task("Combined scroll + explore")
     bg.add_task(
         _combined_scroll_worker,
-        task.task_id, req.account_path, req.duration,
+        task.task_id, req.user_id, req.duration,
         req.headless, req.infinite_mode,
         req.search_targets, req.search_chance,
         req.profile_scroll_count_min, req.profile_scroll_count_max,
+        req.browser_type,
     )
     return TaskResponse(
         task_id=task.task_id, status="accepted",
@@ -186,11 +212,12 @@ async def start_scraper_scroll(req: ScraperScrollRequest, bg: BackgroundTasks):
     task = create_task(f"Scraper-scroll – {req.target_customer}")
     bg.add_task(
         _scraper_scroll_worker,
-        task.task_id, req.account_path, req.duration,
+        task.task_id, req.user_id, req.duration,
         req.headless, req.infinite_mode,
         req.target_customer, req.scraper_chance,
         req.model, req.search_targets, req.search_chance,
         req.profile_scroll_count_min, req.profile_scroll_count_max,
+        req.browser_type,
     )
     return TaskResponse(
         task_id=task.task_id, status="accepted",
@@ -208,9 +235,10 @@ async def start_csv_profile_visit(req: CSVProfileVisitRequest, bg: BackgroundTas
     task = create_task(f"CSV visit – {req.csv_path}")
     bg.add_task(
         _csv_visit_worker,
-        task.task_id, req.account_path, req.csv_path,
+        task.task_id, req.user_id, req.csv_path,
         req.headless, req.scroll_count_min, req.scroll_count_max,
         req.delay_min, req.delay_max, req.like_chance,
+        req.browser_type,
     )
     return TaskResponse(
         task_id=task.task_id, status="accepted",

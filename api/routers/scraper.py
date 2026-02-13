@@ -33,15 +33,28 @@ async def export_csv(req: ExportCSVRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# Allowed directories for file serving (prevents path traversal)
+_ALLOWED_DIRS = [os.path.abspath("output"), os.path.abspath("uploads")]
+
+
+def _safe_path(filepath: str) -> str:
+    """Resolve a path and ensure it falls inside an allowed directory."""
+    resolved = os.path.abspath(filepath)
+    if not any(resolved.startswith(d) for d in _ALLOWED_DIRS):
+        raise HTTPException(status_code=403, detail="Access denied – path outside allowed directories")
+    return resolved
+
+
 @router.get("/csv/download")
 async def download_csv(filepath: str):
     """
     Download a previously exported CSV file.
     Pass the `filepath` returned by `/scraper/csv/export`.
     """
-    if not os.path.isfile(filepath):
+    safe = _safe_path(filepath)
+    if not os.path.isfile(safe):
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(filepath, media_type="text/csv", filename=os.path.basename(filepath))
+    return FileResponse(safe, media_type="text/csv", filename=os.path.basename(safe))
 
 
 @router.post("/csv/validate")
@@ -73,16 +86,26 @@ async def create_sample(req: CreateSampleCSVRequest):
 
 
 @router.post("/csv/upload")
-async def upload_csv(file: UploadFile = File(...), save_dir: str = "uploads"):
+async def upload_csv(file: UploadFile = File(...)):
     """
     Upload a CSV file and save it to the server.
     Returns the saved path so you can pass it to other endpoints.
     """
+    save_dir = "uploads"  # fixed directory – not user-controllable
     os.makedirs(save_dir, exist_ok=True)
-    dest = os.path.join(save_dir, file.filename)
+    # Sanitize filename: strip path components, allow only safe chars
+    import re as _re
+    safe_name = os.path.basename(file.filename or "upload.csv")
+    safe_name = _re.sub(r'[^a-zA-Z0-9_.-]', '_', safe_name)
+    if not safe_name.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Only .csv files are accepted")
+    dest = os.path.join(save_dir, safe_name)
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:  # 10 MB limit
+        raise HTTPException(status_code=413, detail="File too large (max 10 MB)")
     with open(dest, "wb") as f:
-        f.write(await file.read())
-    return {"saved_path": dest, "filename": file.filename}
+        f.write(content)
+    return {"saved_path": dest, "filename": safe_name}
 
 
 # ── Targets Config ───────────────────────────────────────────────────
@@ -110,21 +133,31 @@ async def get_target_detail(target_key: str):
 
 # ── Full Async Scraper ──────────────────────────────────────────────
 
-def _scrape_worker(task_id: str, target_customer: str, account_path: str,
-                   headless: bool, max_commenters: int, model: str):
+def _scrape_worker(task_id: str, target_customer: str, user_id: int,
+                   headless: bool, max_commenters: int, model: str, browser_type: str):
     """Run the full async scraper + Ollama analysis + CSV export."""
     import asyncio
     log = make_log_fn(task_id)
     update_task(task_id, status=TaskStatus.RUNNING)
-    log(f"Starting scraper pipeline – target={target_customer}, model={model}")
+    log(f"Starting scraper pipeline – target={target_customer}, model={model}, browser={browser_type}")
 
     async def _run():
         try:
+            # Fetch cookies from DB
+            from api.shared.db import fetch_latest_user_cookies
+            row = fetch_latest_user_cookies(user_id)
+            if not row or not row.get("cookies"):
+                raise RuntimeError(f"No cookies for user_id={user_id}. Call POST /session/save first.")
+            cookies = row["cookies"]
+            log(f"Loaded {len(cookies)} cookies from DB for user_id={user_id}")
+
             from browser.scraper import InstagramScraper
             scraper = InstagramScraper(
                 target_customer=target_customer,
                 headless=headless,
                 max_commenters=max_commenters,
+                browser_type=browser_type,
+                cookies=cookies,
             )
             scraped = await scraper.run_session()
             log(f"Scraped {len(scraped)} raw accounts")
@@ -170,8 +203,8 @@ async def run_scraper(req: ScrapeRequest, bg: BackgroundTasks):
     task = create_task(f"Scraper pipeline – {req.target_customer}")
     bg.add_task(
         _scrape_worker,
-        task.task_id, req.target_customer, req.account_path,
-        req.headless, req.max_commenters, req.model,
+        task.task_id, req.target_customer, req.user_id,
+        req.headless, req.max_commenters, req.model, req.browser_type,
     )
     return TaskResponse(
         task_id=task.task_id,

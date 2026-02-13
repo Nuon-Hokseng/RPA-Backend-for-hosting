@@ -5,8 +5,12 @@ import re
 from collections import Counter
 from playwright.async_api import async_playwright
 from config.targets import get_target_config
-
-SESSION_DIR = "instagram_session"
+from browser.launcher import (
+    launch_with_cookies_async,
+    BrowserType,
+    DEFAULT_BROWSER,
+    DEFAULT_HEADLESS,
+)
 USERNAME_PATTERN = re.compile(r'^/([a-zA-Z0-9_.]{1,30})/$')
 
 MAX_ACCOUNTS_PER_SESSION = 30
@@ -73,34 +77,19 @@ async def maybe_take_break():
         await asyncio.sleep(random.uniform(8, 15))
 
 
-async def login_and_save_session():
-    print("Opening Instagram for login...")
-    print("Please login manually. You have 120 seconds.")
-    
-    async with async_playwright() as p:
-        context = await p.chromium.launch_persistent_context(
-            SESSION_DIR,
-            headless=False,
-            viewport={"width": 1280, "height": 720}
-        )
-        page = context.pages[0] if context.pages else await context.new_page()
-        await page.goto("https://www.instagram.com/accounts/login/")
-        await asyncio.sleep(120)
-        await context.close()
-    
-    print(f"Session saved to '{SESSION_DIR}/'")
-
-
-def session_exists() -> bool:
-    return os.path.exists(SESSION_DIR) and os.path.isdir(SESSION_DIR)
+async def login_and_save_session(browser_type: BrowserType = DEFAULT_BROWSER):
+    """Deprecated – use /session/save endpoint instead."""
+    raise NotImplementedError("Use the /session/save API endpoint for login.")
 
 
 class InstagramScraper:
-    def __init__(self, target_customer: str, headless: bool = False, max_commenters: int = MAX_COMMENTERS_PER_POST):
+    def __init__(self, target_customer: str, cookies: list[dict], headless: bool = DEFAULT_HEADLESS, max_commenters: int = MAX_COMMENTERS_PER_POST, browser_type: BrowserType = DEFAULT_BROWSER):
         self.headless = headless
         self.target_customer = target_customer
+        self.cookies = cookies
         self.config = get_target_config(target_customer)
         self.max_commenters = max_commenters
+        self.browser_type = browser_type
         
         if not self.config:
             raise ValueError(f"Unknown target customer: {target_customer}")
@@ -308,21 +297,12 @@ class InstagramScraper:
         users = []
         
         async with async_playwright() as p:
-            if session_exists():
-                context = await p.chromium.launch_persistent_context(
-                    SESSION_DIR,
-                    headless=self.headless,
-                    viewport={"width": 1280, "height": 720}
-                )
-                page = context.pages[0] if context.pages else await context.new_page()
-                browser = None
-            else:
-                browser = await p.chromium.launch(headless=self.headless)
-                context = await browser.new_context(
-                    viewport={"width": 1280, "height": 720},
-                    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-                )
-                page = await context.new_page()
+            browser, context, page = await launch_with_cookies_async(
+                p,
+                self.cookies,
+                browser_type=self.browser_type,
+                headless=self.headless,
+            )
             
             url = f"https://www.instagram.com/explore/tags/{hashtag}/"
             print(f"  Visiting #{hashtag}...")
@@ -378,8 +358,7 @@ class InstagramScraper:
                 await maybe_take_break()
             
             await context.close()
-            if browser:
-                await browser.close()
+            await browser.close()
         
         return users
     
@@ -416,11 +395,13 @@ class InstagramScraper:
         return all_users
 
 
-async def run_scraper(target_customer: str, max_commenters: int = MAX_COMMENTERS_PER_POST) -> list[dict]:
+async def run_scraper(target_customer: str, cookies: list[dict], max_commenters: int = MAX_COMMENTERS_PER_POST, browser_type: BrowserType = DEFAULT_BROWSER) -> list[dict]:
     """Entry point for scraping."""
     scraper = InstagramScraper(
-        target_customer=target_customer, 
+        target_customer=target_customer,
+        cookies=cookies,
         headless=False,
-        max_commenters=max_commenters
+        max_commenters=max_commenters,
+        browser_type=browser_type,
     )
     return await scraper.run_session()

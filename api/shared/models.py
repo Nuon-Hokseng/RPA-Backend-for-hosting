@@ -1,11 +1,15 @@
 """Shared Pydantic models and task manager for all API routers."""
 
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, Literal
 from enum import Enum
 import uuid
-import asyncio
 from datetime import datetime
+
+
+# ── Browser type ────────────────────────────────────────────────────
+
+BROWSER_TYPE_CHOICES = Literal["chromium", "firefox", "webkit"]
 
 
 # ── Task Management ─────────────────────────────────────────────────
@@ -89,10 +93,26 @@ def make_stop_fn(task_id: str):
 
 # ── Request / Response Models ───────────────────────────────────────
 
+class SignupRequest(BaseModel):
+    username: str = Field(..., description="Username for the web app (authentication table)")
+    password: str = Field(..., min_length=6, description="Password (min 6 chars)")
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(..., description="Web-app username")
+    password: str = Field(..., description="Password")
+
+
+class LoginResponse(BaseModel):
+    user_id: int
+    username: str
+    message: str = "Login successful"
+
+
 class SessionRequest(BaseModel):
     user_id: int = Field(..., description="User id from the authentication table")
-    account_path: str = Field(..., description="Path to the browser profile directory")
-    timeout: int = Field(120, description="Seconds to wait for manual login")
+    timeout: int = Field(120, description="Seconds to wait for manual Instagram login")
+    browser_type: BROWSER_TYPE_CHOICES = Field("chromium", description="Browser engine: chromium, firefox, or webkit")
 
 
 class AnalyzeAccountsRequest(BaseModel):
@@ -123,35 +143,38 @@ class CreateSampleCSVRequest(BaseModel):
 
 
 class ScrapeRequest(BaseModel):
-    account_path: str = Field("instagram_session", description="Browser profile directory")
+    user_id: int = Field(..., description="User id from authentication table (cookies loaded from DB)")
     target_customer: str = Field(..., description="Target customer key")
-    headless: bool = Field(True, description="Run browser in headless mode")
+    headless: bool = Field(False, description="Run browser in headless mode (default: visible)")
     max_commenters: int = Field(15, description="Max commenters to extract per post")
     model: str = Field("llama3:8b", description="Ollama model for analysis")
+    browser_type: BROWSER_TYPE_CHOICES = Field("chromium", description="Browser engine: chromium, firefox, or webkit")
 
 
 class ScrollRequest(BaseModel):
-    account_path: str = Field(..., description="Browser profile directory")
+    user_id: int = Field(..., description="User id from authentication table (cookies loaded from DB)")
     duration: int = Field(60, description="Session duration in seconds")
-    headless: bool = Field(True, description="Run browser in headless mode")
+    headless: bool = Field(False, description="Run browser in headless mode (default: visible)")
     infinite_mode: bool = Field(False, description="Enable infinite scroll mode with rest cycles")
+    browser_type: BROWSER_TYPE_CHOICES = Field("chromium", description="Browser engine: chromium, firefox, or webkit")
 
 
 class CombinedScrollRequest(BaseModel):
-    account_path: str = Field(..., description="Browser profile directory")
+    user_id: int = Field(..., description="User id from authentication table (cookies loaded from DB)")
     duration: int = Field(60, description="Session duration in seconds")
-    headless: bool = Field(True, description="Run browser in headless mode")
+    headless: bool = Field(False, description="Run browser in headless mode (default: visible)")
     infinite_mode: bool = Field(False, description="Enable infinite mode with rest cycles")
     search_targets: Optional[list[str]] = Field(None, description="Targets to randomly search/explore")
     search_chance: float = Field(0.30, description="Probability of exploring a target per scroll cycle")
     profile_scroll_count_min: int = Field(3, description="Min scrolls on a profile page")
     profile_scroll_count_max: int = Field(8, description="Max scrolls on a profile page")
+    browser_type: BROWSER_TYPE_CHOICES = Field("chromium", description="Browser engine: chromium, firefox, or webkit")
 
 
 class ScraperScrollRequest(BaseModel):
-    account_path: str = Field(..., description="Browser profile directory")
+    user_id: int = Field(..., description="User id from authentication table (cookies loaded from DB)")
     duration: int = Field(60, description="Session duration in seconds")
-    headless: bool = Field(True, description="Run browser in headless mode")
+    headless: bool = Field(False, description="Run browser in headless mode (default: visible)")
     infinite_mode: bool = Field(False, description="Enable infinite mode")
     target_customer: str = Field("car", description="Target customer key for scraper pipeline")
     scraper_chance: float = Field(0.20, description="Probability of triggering scraper per scroll")
@@ -160,25 +183,28 @@ class ScraperScrollRequest(BaseModel):
     search_chance: float = Field(0.30, description="Probability of random explore")
     profile_scroll_count_min: int = Field(3)
     profile_scroll_count_max: int = Field(8)
+    browser_type: BROWSER_TYPE_CHOICES = Field("chromium", description="Browser engine: chromium, firefox, or webkit")
 
 
 class CSVProfileVisitRequest(BaseModel):
-    account_path: str = Field(..., description="Browser profile directory")
+    user_id: int = Field(..., description="User id from authentication table (cookies loaded from DB)")
     csv_path: str = Field(..., description="Path to CSV file containing targets to visit")
-    headless: bool = Field(True, description="Run browser in headless mode")
+    headless: bool = Field(False, description="Run browser in headless mode (default: visible)")
     scroll_count_min: int = Field(3, description="Min scrolls per profile")
     scroll_count_max: int = Field(8, description="Max scrolls per profile")
     delay_min: int = Field(5, description="Min seconds delay between profile visits")
     delay_max: int = Field(15, description="Max seconds delay between profile visits")
     like_chance: float = Field(0.10, description="Probability of liking a post while scrolling")
+    browser_type: BROWSER_TYPE_CHOICES = Field("chromium", description="Browser engine: chromium, firefox, or webkit")
 
 
 class SearchRequest(BaseModel):
-    account_path: str = Field(..., description="Browser profile directory")
+    user_id: int = Field(..., description="User id from authentication table (cookies loaded from DB)")
     search_term: str = Field(..., description="The term to search for")
     search_type: str = Field("hashtag", description="'hashtag' or 'username'")
-    headless: bool = Field(True, description="Run browser in headless mode")
+    headless: bool = Field(False, description="Run browser in headless mode (default: visible)")
     keep_open: bool = Field(False, description="Keep browser open after search (blocks until stopped)")
+    browser_type: BROWSER_TYPE_CHOICES = Field("chromium", description="Browser engine: chromium, firefox, or webkit")
 
 
 class TaskResponse(BaseModel):

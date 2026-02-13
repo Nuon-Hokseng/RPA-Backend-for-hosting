@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from agents.ollama_brain import analyze_accounts
 from output.csv_export import export_to_csv
 from config.targets import get_target_config
-from search_engine import perform_search
+from browser.search_engine import perform_search
 
 # Reuse all shared constants and helpers from scraper.py — single source of truth
 from scraper import (
