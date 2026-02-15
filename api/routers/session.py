@@ -18,6 +18,7 @@ from api.shared.db import (
     signup_user,
     login_user,
     get_user_by_id,
+    insert_new_user_cookies,
     upsert_user_cookies,
     fetch_all_user_cookies,
     fetch_latest_user_cookies,
@@ -73,7 +74,7 @@ async def _save_session_worker(
     exports cookies and upserts them into Supabase."""
     log = make_log_fn(task_id)
     update_task(task_id, status=TaskStatus.RUNNING)
-    log(f"Launching {browser_type} browser – you have {timeout}s to login to Instagram")
+    log(f"Launching {browser_type} for IG login (timeout={timeout}s)")
 
     try:
         from browser.session import open_login_and_export_cookies
@@ -89,10 +90,10 @@ async def _save_session_worker(
             update_task(task_id, status=TaskStatus.FAILED, message="No cookies extracted")
             return
 
-        # Upsert into Supabase (replaces old cookies for this user)
+        # Insert a NEW cookie row (each login creates a separate snapshot)
         # Run sync Supabase call in a thread to avoid blocking the event loop
         loop = asyncio.get_running_loop()
-        row = await loop.run_in_executor(None, partial(upsert_user_cookies, user_id, cookies))
+        row = await loop.run_in_executor(None, partial(insert_new_user_cookies, user_id, cookies))
         cookie_row_id = row.get("id", "?")
         log(f"Cookies stored in Supabase (row id={cookie_row_id}) for user_id={user_id}")
 
@@ -112,15 +113,19 @@ async def _save_session_worker(
 async def save_session(req: SessionRequest, bg: BackgroundTasks):
     """
     Open a **headful** browser pointed at the Instagram login page.
-    The user logs in manually within the ``timeout`` window.
-    Cookies are exported and stored in the Supabase ``user_cookies`` table
-    (one active cookie set per ``user_id``; old cookies are replaced).
+    The user logs in manually; the browser **closes immediately** once
+    login is detected (``ds_user`` cookie appears).  If the user hasn't
+    logged in within ``timeout`` seconds, the browser closes anyway.
+
+    Each call creates a **new** cookie snapshot – one user can have
+    multiple stored sessions (use ``GET /session/cookies/{user_id}?latest=false``
+    to see all of them).
 
     **Flow:**
     1. ``POST /session/signup`` or ``/session/login`` to get a ``user_id``
     2. ``POST /session/save`` with that ``user_id`` → browser opens
     3. Log in to Instagram in the browser window
-    4. After timeout, cookies are saved and the browser closes
+    4. Browser closes immediately after login is detected
     5. All other endpoints (scroll, scrape, search) now work
     """
     # Validate user exists
@@ -183,14 +188,33 @@ async def remove_cookie(cookie_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _extract_instagram_username_from_cookies(cookies: list[dict] | None) -> str | None:
+    """
+    Extract Instagram username from stored cookies.
+    Instagram sets 'ds_user' cookie with the logged-in username.
+    """
+    if not cookies or not isinstance(cookies, list):
+        return None
+    for c in cookies:
+        if isinstance(c, dict) and c.get("name") == "ds_user":
+            val = c.get("value")
+            if val and isinstance(val, str) and val.strip():
+                return val.strip()
+    return None
+
+
 @router.get("/check/{user_id}")
 async def check_session(user_id: int):
     """Check whether a user has stored Instagram cookies (i.e. an active session)."""
     row = fetch_latest_user_cookies(user_id)
     has_cookies = bool(row and row.get("cookies"))
+    instagram_username = None
+    if has_cookies and row:
+        instagram_username = _extract_instagram_username_from_cookies(row.get("cookies"))
     return {
         "user_id": user_id,
         "has_cookies": has_cookies,
+        "instagram_username": instagram_username,
         "message": "Cookies ready" if has_cookies else "No cookies – call POST /session/save first",
     }
 

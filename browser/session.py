@@ -28,8 +28,13 @@ async def open_login_and_export_cookies(
     Open a **headful** browser, navigate to Instagram login, wait for the
     user to log in, then export and return all cookies.
 
-    Uses a temporary profile directory that is cleaned up after cookie export.
-    The caller (router) is responsible for pushing cookies to the database.
+    The browser closes **immediately** once a successful login is detected.
+    Detection uses two signals (whichever fires first):
+      1. A ``ds_user`` cookie appears (Instagram sets it on login)
+      2. The page URL navigates away from the login page
+
+    If neither signal fires within ``timeout`` seconds, the browser closes
+    anyway and returns whatever cookies exist.
     """
     tmp_dir = tempfile.mkdtemp(prefix="ig_login_")
     try:
@@ -44,11 +49,43 @@ async def open_login_and_export_cookies(
             page = await get_page_async(context)
             await page.goto("https://www.instagram.com/accounts/login/")
 
-            # Wait for user to finish logging in
-            await asyncio.sleep(timeout)
+            # Poll for successful login — two detection methods
+            logged_in = False
+            elapsed = 0
+            poll_interval = 1  # check every second for fast response
 
-            # Export cookies before closing
-            cookies = await context.cookies()
+            while elapsed < timeout:
+                # Method 1: check cookies across all IG domains
+                all_cookies = await context.cookies([
+                    "https://www.instagram.com",
+                    "https://instagram.com",
+                    "https://i.instagram.com",
+                ])
+                if any(c.get("name") == "ds_user" for c in all_cookies):
+                    logged_in = True
+                    break
+
+                # Method 2: URL navigated away from login page
+                current_url = page.url
+                if (
+                    "instagram.com" in current_url
+                    and "/accounts/login" not in current_url
+                    and "/challenge" not in current_url  # skip 2FA challenge page
+                ):
+                    # Give it a moment for cookies to finalize
+                    await asyncio.sleep(2)
+                    logged_in = True
+                    break
+
+                await asyncio.sleep(poll_interval)
+                elapsed += poll_interval
+
+            # Export all cookies before closing
+            cookies = await context.cookies([
+                "https://www.instagram.com",
+                "https://instagram.com",
+                "https://i.instagram.com",
+            ])
             await context.close()
     finally:
         # Clean up temp profile directory

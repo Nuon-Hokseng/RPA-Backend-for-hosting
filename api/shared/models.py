@@ -9,7 +9,7 @@ from datetime import datetime
 
 # ── Browser type ────────────────────────────────────────────────────
 
-BROWSER_TYPE_CHOICES = Literal["chromium", "firefox", "webkit"]
+BROWSER_TYPE_CHOICES = Literal["chromium", "chrome", "msedge", "brave", "opera", "firefox", "webkit", "safari"]
 
 
 # ── Task Management ─────────────────────────────────────────────────

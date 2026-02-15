@@ -114,6 +114,24 @@ def get_user_by_username(username: str) -> dict | None:
 
 # ── Cookie CRUD ─────────────────────────────────────────────────────
 
+def insert_new_user_cookies(user_id: int, cookies: list[dict]) -> dict:
+    """
+    Always **INSERT** a new cookie row for the user.
+    One user can accumulate multiple cookie snapshots (e.g. different
+    IG accounts or re-logins).  The most recent row is used by default
+    elsewhere via ``fetch_latest_user_cookies``.
+    """
+    sb = get_supabase()
+    result = (
+        sb.table("user_cookies")
+        .insert({"user_id": user_id, "cookies": cookies})
+        .execute()
+    )
+    if not result.data:
+        raise RuntimeError(f"Cookie insert failed for user_id={user_id} – no row returned")
+    return result.data[0]
+
+
 def upsert_user_cookies(user_id: int, cookies: list[dict]) -> dict:
     """
     Insert **or replace** cookies for a user.

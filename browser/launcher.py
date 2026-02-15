@@ -1,18 +1,23 @@
 """
 Centralized Browser Launcher
 =============================
-Supports **all** Playwright browsers: chromium (Chrome), firefox, webkit.
-Defaults to **headful** mode so users can see everything.
-Uses the real Chrome channel by default (instead of raw Chromium).
+Supports many browsers via Playwright:
+  - chromium (bundled Chromium, tries Chrome channel first)
+  - chrome   (user's installed Google Chrome)
+  - msedge   (user's installed Microsoft Edge)
+  - brave    (user's installed Brave Browser)
+  - opera    (user's installed Opera / Opera GX)
+  - firefox  (bundled Firefox)
+  - webkit   (bundled WebKit — closest to Safari)
+  - safari   (alias for webkit)
 
-When Chromium is selected the launcher will try `channel="chrome"` first,
-and silently fall back to plain Chromium if Chrome is not installed.
+Defaults to **headful** mode so users can see everything.
 
 Usage (sync):
     from browser.launcher import launch_persistent, get_page, BrowserType
 
     with sync_playwright() as p:
-        context = launch_persistent(p, "profile_dir", browser_type="firefox")
+        context = launch_persistent(p, "profile_dir", browser_type="brave")
         page = get_page(context)
         ...
 
@@ -20,41 +25,111 @@ Usage (async):
     from browser.launcher import launch_persistent_async, get_page_async
 
     async with async_playwright() as p:
-        context = await launch_persistent_async(p, "profile_dir")
+        context = await launch_persistent_async(p, "profile_dir", browser_type="opera")
         page = await get_page_async(context)
         ...
 """
 
 from __future__ import annotations
+
+import os
+import platform
+import shutil
 from typing import Literal
 
 
 # ── Public types & defaults ──────────────────────────────────────────
 
-BrowserType = Literal["chromium", "firefox", "webkit"]
+BrowserType = Literal[
+    "chromium", "chrome", "msedge", "brave", "opera",
+    "firefox", "webkit", "safari",
+]
 
-SUPPORTED_BROWSERS: list[BrowserType] = ["chromium", "firefox", "webkit"]
+SUPPORTED_BROWSERS: list[BrowserType] = [
+    "chromium", "chrome", "msedge", "brave", "opera",
+    "firefox", "webkit", "safari",
+]
 DEFAULT_BROWSER: BrowserType = "chromium"
 DEFAULT_HEADLESS: bool = False          # headful so the user can watch
-DEFAULT_CHANNEL: str = "chrome"         # real Chrome instead of raw Chromium
+
+# engine:   which Playwright engine to use (chromium / firefox / webkit)
+# channel:  Playwright channel name (only for chromium-based browsers)
+# exe_hint: possible executable names / paths to search for on the system
+_BROWSER_CONFIG: dict[str, dict] = {
+    "chromium": {"engine": "chromium", "channel": "chrome", "exe_hint": []},
+    "chrome":   {"engine": "chromium", "channel": "chrome", "exe_hint": []},
+    "msedge":   {"engine": "chromium", "channel": "msedge", "exe_hint": []},
+    "brave": {
+        "engine": "chromium",
+        "channel": None,
+        "exe_hint": [
+            # Linux
+            "brave-browser", "brave-browser-stable",
+            "/usr/bin/brave-browser",
+            "/usr/bin/brave-browser-stable",
+            "/opt/brave.com/brave/brave-browser",
+            # macOS
+            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+            # Windows
+            os.path.expandvars(r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\brave.exe"),
+            os.path.expandvars(r"%PROGRAMFILES%\BraveSoftware\Brave-Browser\Application\brave.exe"),
+        ],
+    },
+    "opera": {
+        "engine": "chromium",
+        "channel": None,
+        "exe_hint": [
+            # Linux
+            "opera", "opera-stable",
+            "/usr/bin/opera",
+            "/usr/bin/opera-stable",
+            "/snap/bin/opera",
+            # macOS
+            "/Applications/Opera.app/Contents/MacOS/Opera",
+            "/Applications/Opera GX.app/Contents/MacOS/Opera",
+            # Windows
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Opera\opera.exe"),
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Opera GX\opera.exe"),
+            os.path.expandvars(r"%APPDATA%\Opera Software\Opera Stable\opera.exe"),
+            os.path.expandvars(r"%APPDATA%\Opera Software\Opera GX Stable\opera.exe"),
+        ],
+    },
+    "firefox": {"engine": "firefox", "channel": None, "exe_hint": []},
+    "webkit":  {"engine": "webkit",  "channel": None, "exe_hint": []},
+    "safari":  {"engine": "webkit",  "channel": None, "exe_hint": []},  # alias
+}
 
 
 # ── Internal helpers ─────────────────────────────────────────────────
 
+def _find_executable(hints: list[str]) -> str | None:
+    """Try to locate a browser executable from a list of hints."""
+    for hint in hints:
+        # Absolute path?
+        if os.path.isfile(hint):
+            return hint
+        # On PATH?
+        found = shutil.which(hint)
+        if found:
+            return found
+    return None
+
+
 def _engine(playwright, browser_type: BrowserType):
-    """Return the browser-engine object from a playwright instance."""
+    """Return the Playwright engine object for a given browser_type."""
+    config = _BROWSER_CONFIG.get(browser_type)
+    if config is None:
+        raise ValueError(
+            f"Unsupported browser_type={browser_type!r}. "
+            f"Choose from: {', '.join(SUPPORTED_BROWSERS)}"
+        )
+    engine_name = config["engine"]
     engines = {
         "chromium": playwright.chromium,
         "firefox": playwright.firefox,
         "webkit":  playwright.webkit,
     }
-    engine = engines.get(browser_type)
-    if engine is None:
-        raise ValueError(
-            f"Unsupported browser_type={browser_type!r}. "
-            f"Choose from: {', '.join(SUPPORTED_BROWSERS)}"
-        )
-    return engine
+    return engines[engine_name]
 
 
 def _build_opts(
@@ -64,9 +139,22 @@ def _build_opts(
 ) -> dict:
     """Build the kwargs dict for launch / launch_persistent_context."""
     opts: dict = {"headless": headless, **extra}
-    # Only Chromium supports the `channel` option
-    if browser_type == "chromium":
-        opts.setdefault("channel", DEFAULT_CHANNEL)
+    config = _BROWSER_CONFIG.get(browser_type, {})
+
+    # For Brave / Opera: find the executable and set executablePath
+    if config.get("exe_hint"):
+        exe = _find_executable(config["exe_hint"])
+        if exe:
+            opts.setdefault("executable_path", exe)
+        else:
+            raise FileNotFoundError(
+                f"Could not find {browser_type} on this system. "
+                f"Make sure it is installed. Searched: {config['exe_hint'][:3]}..."
+            )
+    # For chrome / msedge: use Playwright's built-in channel
+    elif config.get("channel"):
+        opts.setdefault("channel", config["channel"])
+
     return opts
 
 
